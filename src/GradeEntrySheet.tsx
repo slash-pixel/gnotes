@@ -15,8 +15,7 @@ import {
   Filter
 } from 'lucide-react';
 import type { SessionInfo } from './App';
-import { fetchApi } from './services/api';
-
+import { fetchApi, setAuthToken } from './services/api';
 interface StudentGradeRow {
   id_eleve: string;
   nom_complet: string;
@@ -99,8 +98,13 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
   // Modal de déverrouillage Admin
   const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
   const [adminId, setAdminId] = useState<string>('');
-  const [adminPassword, setAdminPassword] = useState<string>('');
+   const [adminPassword, setAdminPassword] = useState<string>('');
 
+  // 0. Garantit que le token reçu en prop est celui utilisé par fetchApi
+  useEffect(() => {
+    if (token) setAuthToken(token);
+  }, [token]);
+  
   // 1. Charger les classes et séquences au démarrage
   useEffect(() => {
     async function initMetadata() {

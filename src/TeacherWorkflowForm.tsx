@@ -14,7 +14,7 @@ import {
   Loader2 
 } from 'lucide-react';
 import type { SessionInfo } from './App';
-import { fetchApi } from './services/api';
+import { fetchApi, setAuthToken } from './services/api';
 
 type Step = 'form' | 'password';
 
@@ -67,7 +67,7 @@ export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLogi
   const [loadingInitial, setLoadingInitial] = useState<boolean>(true);
   const [loadingTeachers, setLoadingTeachers] = useState<boolean>(false);
   const [step, setStep] = useState<Step>('form');
-  const [password, setPassword] = useState<string>('saintcharles');
+  const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [loadingLogin, setLoadingLogin] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -168,8 +168,7 @@ export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLogi
         throw new Error("Aucun token reçu du serveur.");
       }
 
-      localStorage.setItem('token', response.token);
-      localStorage.setItem('jwt_token', response.token);
+     setAuthToken(response.token);
 
       onLoginSuccess({
         id_classe: selectedClass,
