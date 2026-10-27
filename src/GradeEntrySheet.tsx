@@ -211,6 +211,16 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
           id_eleve: s.id_eleve,
           valeur_note: Number(s.valeur_note)
         }));
+        if (notesPayload.length === 0) {
+  setNotification({ type: 'error', message: 'Saisissez au moins une note avant d’enregistrer.' });
+  setSaving(false);
+  return;
+}
+if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
+  setNotification({ type: 'error', message: 'Toutes les notes doivent être comprises entre 0 et 20.' });
+  setSaving(false);
+  return;
+}
 
       await fetchApi('/notes/sauvegarder', {
         method: 'POST',
