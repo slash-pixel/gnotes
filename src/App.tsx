@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { TeacherWorkflowForm } from './TeacherWorkflowForm';
 import { GradeEntrySheet } from './GradeEntrySheet';
+import { AdminLogin } from './AdminLogin';
+import { AdminDashboard } from './AdminDashboard';
+import { clearAuthToken } from './services/api';
 
 export interface SessionInfo {
   subjectName?: string;
@@ -15,32 +18,67 @@ export interface SessionInfo {
 export const App: React.FC = () => {
   const [sessionData, setSessionData] = useState<SessionInfo | null>(null);
   const [token, setToken] = useState<string>('');
-  const [userRole, setUserRole] = useState<'enseignant' | 'admin'>('enseignant');
+  const [userRole] = useState<'enseignant' | 'admin'>('enseignant');
+
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [showAdminLogin, setShowAdminLogin] = useState<boolean>(false);
 
   const handleLoginSuccess = (info: SessionInfo, authToken: string) => {
     setSessionData(info);
     setToken(authToken);
-    setUserRole('enseignant'); // ou selon votre logique
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('jwt_token');
+  const handleLogout = useCallback(() => {
+    clearAuthToken();
     setSessionData(null);
     setToken('');
-  };
+  }, []);
 
-  if (!sessionData || !token) {
-    return <TeacherWorkflowForm onLoginSuccess={handleLoginSuccess} />;
+  // Stable : utilisé comme dépendance d'effet dans AdminDashboard
+  const handleAdminLogout = useCallback(() => {
+    clearAuthToken();
+    setIsAdmin(false);
+    setShowAdminLogin(false);
+  }, []);
+
+  // 1. Espace administration connecté
+  if (isAdmin) {
+    return <AdminDashboard onLogout={handleAdminLogout} />;
   }
 
+  // 2. Enseignant connecté : saisie des notes
+  if (sessionData && token) {
+    return (
+      <GradeEntrySheet
+        sessionData={sessionData}
+        token={token}
+        userRole={userRole}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  // 3. Connexion administrateur
+  if (showAdminLogin) {
+    return (
+      <AdminLogin
+        onSuccess={() => setIsAdmin(true)}
+        onBack={() => setShowAdminLogin(false)}
+      />
+    );
+  }
+
+  // 4. Connexion enseignant (par défaut)
   return (
-    <GradeEntrySheet 
-      sessionData={sessionData} 
-      token={token} 
-      userRole={userRole} 
-      onLogout={handleLogout} 
-    />
+    <>
+      <TeacherWorkflowForm onLoginSuccess={handleLoginSuccess} />
+      <button
+        onClick={() => setShowAdminLogin(true)}
+        className="fixed bottom-4 right-4 text-xs text-blue-200 hover:text-white underline cursor-pointer"
+      >
+        Espace administration
+      </button>
+    </>
   );
 };
 

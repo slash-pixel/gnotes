@@ -23,9 +23,6 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  // Temporaire : repère l'appel qui part sans token (à retirer ensuite)
-  console.log('[API]', endpoint, token ? 'token présent' : '⚠️ PAS DE TOKEN');
-
   const response = await fetch(`${API_URL}${endpoint}`, { ...options, headers });
 
   if (!response.ok) {
@@ -34,4 +31,27 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   }
 
   return response.json();
+}
+
+// Télécharge un fichier (ex. Excel) depuis l'API en envoyant le token
+export async function downloadFile(endpoint: string, fileName: string) {
+  const token = localStorage.getItem('token') || localStorage.getItem('jwt_token');
+  const response = await fetch(`${API_URL}${endpoint}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Erreur réseau inconnue' }));
+    throw new Error(errorData.error || `Erreur HTTP ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
