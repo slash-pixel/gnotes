@@ -20,6 +20,7 @@ type Step = 'form' | 'password';
 
 interface TeacherWorkflowFormProps {
   onLoginSuccess: (info: SessionInfo & { id_classe?: string; id_matiere?: string; id_sequence?: string }, token: string) => void;
+  onNavigateAdmin?: () => void;
 }
 
 interface TrimestreSequence {
@@ -52,7 +53,7 @@ interface LoginResponse {
   message?: string;
 }
 
-export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLoginSuccess }) => {
+export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLoginSuccess, onNavigateAdmin }) => {
   const [selectedTrimester, setSelectedTrimester] = useState<string>('');
   const [selectedClass, setSelectedClass] = useState<string>('');
   const [selectedSubject, setSelectedSubject] = useState<string>('');
@@ -92,7 +93,7 @@ export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLogi
     loadInitialData();
   }, []);
 
-  // Charger les matières lorsque la classe change (sans setState synchrone direct dans le corps de l'effet)
+  // Charger les matières lorsque la classe change
   useEffect(() => {
     async function loadSubjects() {
       if (!selectedClass) {
@@ -168,7 +169,7 @@ export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLogi
         throw new Error("Aucun token reçu du serveur.");
       }
 
-     setAuthToken(response.token);
+      setAuthToken(response.token);
 
       onLoginSuccess({
         id_classe: selectedClass,
@@ -200,10 +201,10 @@ export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLogi
   }
 
   return (
-    <div className="min-h-screen bg-[#0B1F4B] text-[#0B1F4B] flex items-center justify-center p-4 sm:p-6 font-sans">
+    <div className="min-h-screen bg-[#0B1F4B] text-[#0B1F4B] flex flex-col items-center justify-center p-4 sm:p-6 font-sans">
       <div className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-blue-900/10 overflow-hidden">
         
-        {/* En-tête épuré sans indicateur d'étape */}
+        {/* En-tête */}
         <div className="bg-[#0B1F4B] text-white p-6 flex items-center justify-between border-b-4 border-[#C9A227]">
           <div>
             <h1 className="font-serif text-lg sm:text-xl font-bold text-[#C9A227]">
@@ -304,7 +305,18 @@ export const TeacherWorkflowForm: React.FC<TeacherWorkflowFormProps> = ({ onLogi
                   </select>
                 </div>
 
-                <div className="pt-2 flex justify-end">
+                <div className="pt-2 flex items-center justify-between">
+                  {/* Lien Espace administration déplacé en bas à gauche */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onNavigateAdmin) onNavigateAdmin();
+                    }}
+                    className="text-xs font-semibold text-[#0B1F4B] hover:text-[#C9A227] transition-colors cursor-pointer underline"
+                  >
+                    Espace administration
+                  </button>
+
                   <button
                     type="submit"
                     disabled={!isFormComplete}

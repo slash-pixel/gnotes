@@ -68,17 +68,12 @@ export const App: React.FC = () => {
     );
   }
 
-  // 4. Connexion enseignant (par défaut)
+  // 4. Connexion enseignant (par défaut) avec passage de la prop onNavigateAdmin
   return (
-    <>
-      <TeacherWorkflowForm onLoginSuccess={handleLoginSuccess} />
-      <button
-        onClick={() => setShowAdminLogin(true)}
-        className="fixed bottom-4 right-4 text-xs text-blue-200 hover:text-white underline cursor-pointer"
-      >
-        Espace administration
-      </button>
-    </>
+    <TeacherWorkflowForm 
+      onLoginSuccess={handleLoginSuccess} 
+      onNavigateAdmin={() => setShowAdminLogin(true)}
+    />
   );
 };
 

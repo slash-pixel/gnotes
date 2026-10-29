@@ -90,7 +90,8 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
   const [validating, setValidating] = useState<boolean>(false);
   const [unlocking, setUnlocking] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [coefficient, setCoefficient] = useState<number>(2);
+  const [coefficient, setCoefficient] = useState<number>(1);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [, setDateVerrouillage] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
@@ -170,7 +171,8 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
         ) as GridResponse;
         
         setStudents(data.grille ?? []);
-        setCoefficient(data.coefficient || 2);
+        setCoefficient(data.coefficient ?? 1);
+        setHasUnsavedChanges(false);
         setIsLocked(data.est_verrouille ?? false);
         setDateVerrouillage(data.date_verrouillage || null);
       } catch (error: unknown) {
@@ -184,8 +186,22 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
     loadGrille();
   }, [selectedClasse, selectedMatiere, selectedSequence, token]);
 
+  // Modifier le coefficient et recalculer les notes pondérées affichées.
+  const handleCoefficientChange = (value: number) => {
+    if (isLocked) return;
+    setCoefficient(value);
+    setHasUnsavedChanges(true);
+    setStudents(prev => prev.map(student => ({
+      ...student,
+      note_x_coefficient: student.valeur_note !== null && Number.isFinite(value)
+        ? Number((student.valeur_note * value).toFixed(2))
+        : null
+    })));
+  };
+
   const handleGradeChange = (id_eleve: string, value: string) => {
     if (isLocked) return;
+    setHasUnsavedChanges(true);
     setStudents(prev =>
       prev.map(student => {
         if (student.id_eleve === id_eleve) {
@@ -205,6 +221,10 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
     setNotification(null);
 
     try {
+      if (!Number.isFinite(coefficient) || coefficient < 0.01 || coefficient > 99.99 || Number(coefficient.toFixed(2)) !== coefficient) {
+        setNotification({ type: 'error', message: 'Le coefficient doit être compris entre 0,01 et 99,99 (deux décimales maximum).' });
+        return;
+      }
       const notesPayload = students
         .filter(s => s.valeur_note !== null && !isNaN(s.valeur_note))
         .map(s => ({
@@ -228,11 +248,13 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
           id_classe: selectedClasse,
           id_matiere: selectedMatiere,
           id_sequence: selectedSequence,
+          coefficient,
           notes: notesPayload
         })
       });
 
-      setNotification({ type: 'success', message: 'Brouillon enregistré avec succès !' });
+      setHasUnsavedChanges(false);
+      setNotification({ type: 'success', message: 'Brouillon et coefficient enregistrés avec succès !' });
     } catch (error: unknown) {
       const errMessage = error instanceof Error ? error.message : "Erreur lors de la sauvegarde.";
       setNotification({ type: 'error', message: errMessage });
@@ -244,6 +266,10 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
   // Valider et verrouiller définitivement la séquence
   const handleValidateSequence = async () => {
     if (!selectedClasse || !selectedMatiere || !selectedSequence) return;
+    if (hasUnsavedChanges) {
+      setNotification({ type: 'error', message: 'Enregistrez le brouillon et le coefficient avant de valider.' });
+      return;
+    }
     if (!window.confirm("Attention : La validation définitive verrouillera la saisie pour tous les élèves. Êtes-vous sûr ?")) return;
 
     setValidating(true);
@@ -431,7 +457,7 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
 
                     <button 
                       onClick={handleValidateSequence}
-                      disabled={validating || students.length === 0}
+                      disabled={validating || saving || hasUnsavedChanges || students.length === 0}
                       className="flex-1 sm:flex-none flex items-center justify-center space-x-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer disabled:opacity-50"
                     >
                       {validating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
@@ -472,8 +498,20 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
               <span>Notes saisies : <strong className="text-emerald-700">{notesSaisiesCount} / {students.length}</strong></span>
             </span>
           </div>
-          <div className="text-slate-500 font-medium">
-            Coefficient du cours : <strong className="text-slate-700">{coefficient}</strong>
+          <div className="flex items-center gap-3 text-slate-500 font-medium">
+            <label htmlFor="course-coefficient" className="text-xs font-bold text-slate-700">Coefficient du cours :</label>
+            <input
+              id="course-coefficient"
+              type="number"
+              min="0.01"
+              max="99.99"
+              step="0.01"
+              value={Number.isFinite(coefficient) ? coefficient : ''}
+              disabled={isLocked || loadingGrid || saving || validating}
+              onChange={(e) => handleCoefficientChange(e.target.valueAsNumber)}
+              className="w-24 rounded-lg border border-amber-400 px-3 py-2 text-center font-bold text-blue-900 disabled:bg-slate-100"
+            />
+            {hasUnsavedChanges && <span className="text-amber-700">Non enregistré</span>}
           </div>
         </div>
 
