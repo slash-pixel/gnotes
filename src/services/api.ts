@@ -27,7 +27,11 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ error: 'Erreur réseau inconnue' }));
-    throw new Error(errorData.error || `Erreur HTTP ${response.status}`);
+    throw new Error(
+  errorData.error ||
+  errorData.message ||
+  `Erreur HTTP ${response.status}`
+);
   }
 
   return response.json();

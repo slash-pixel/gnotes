@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Save, 
-  Search, 
-  CheckCircle2, 
-  XCircle, 
-  Loader2, 
+import {
+  Save,
+  Search,
+  CheckCircle2,
+  XCircle,
+  Loader2,
   AlertCircle,
   BookOpen,
   Users,
@@ -16,11 +16,36 @@ import {
 } from 'lucide-react';
 import type { SessionInfo } from './App';
 import { fetchApi, setAuthToken } from './services/api';
+
+// Pondération d'un trimestre : CC = 30 %, Éva de niveau = 70 %
+const POIDS_CC = 0.3;
+const POIDS_EVA = 0.7;
+
+type Champ = 'note_cc' | 'note_eva';
+type Partie = 'cc' | 'eva';
+
 interface StudentGradeRow {
   id_eleve: string;
   nom_complet: string;
-  valeur_note: number | null;
-  note_x_coefficient: number | null;
+  note_cc: number | null;
+  note_eva: number | null;
+}
+
+interface Colonne {
+  id_sequence: string;
+  type: Partie;
+  libelle: string;
+  poids: number;
+  est_verrouille: boolean;
+  date_verrouillage: string | null;
+}
+
+interface GrilleTrimestreResponse {
+  id_affectation_cours: string;
+  coefficient: number;
+  coefficient_modifiable: boolean;
+  colonnes: { cc: Colonne; eva: Colonne };
+  grille: StudentGradeRow[];
 }
 
 interface GradeEntrySheetProps {
@@ -46,24 +71,7 @@ interface TrimestreGroup {
   id_trimestre: string;
   numero_trimestre: number;
   libelle_trimestre: string;
-  sequences: {
-    id_sequence: string;
-    numero_sequence: number;
-    libelle_sequence: string;
-  }[];
-}
-
-interface SequenceItem {
-  id_sequence: string;
-  numero_sequence: number;
-  libelle_sequence: string;
-}
-
-interface GridResponse {
-  grille?: StudentGradeRow[];
-  coefficient?: number;
-  est_verrouille?: boolean;
-  date_verrouillage?: string | null;
+  sequences: { id_sequence: string; numero_sequence: number; libelle_sequence: string }[];
 }
 
 interface AuthResponse {
@@ -71,6 +79,16 @@ interface AuthResponse {
   message?: string;
   est_verrouille?: boolean;
 }
+
+const estNote = (v: number | null): v is number => v !== null && Number.isFinite(v);
+const arrondi = (n: number) => Math.round(n * 100) / 100;
+
+// Aperçu instantané : moyenne = 30 % CC + 70 % Éva, puis × coefficient (le serveur recalcule à l'enregistrement)
+const calculer = (s: StudentGradeRow, coefficient: number) => {
+  if (!estNote(s.note_cc) || !estNote(s.note_eva) || !Number.isFinite(coefficient)) return null;
+  const moyenne = arrondi(s.note_cc * POIDS_CC + s.note_eva * POIDS_EVA);
+  return { moyenne, nxc: arrondi(moyenne * coefficient) };
+};
 
 export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, token, userRole, onLogout }) => {
   const [classes, setClasses] = useState<Classe[]>([]);
@@ -81,32 +99,40 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
 
   const [selectedClasse, setSelectedClasse] = useState<string>(session?.id_classe || '');
   const [selectedMatiere, setSelectedMatiere] = useState<string>(session?.id_matiere || '');
-  const [selectedSequence, setSelectedSequence] = useState<string>(session?.id_sequence || '');
+  const [selectedTrimestre, setSelectedTrimestre] = useState<string>('');
 
   const [students, setStudents] = useState<StudentGradeRow[]>([]);
+  const [colonnes, setColonnes] = useState<{ cc: Colonne; eva: Colonne } | null>(null);
+  const [idAffectationCours, setIdAffectationCours] = useState<string>('');
+  const [coefficientModifiable, setCoefficientModifiable] = useState<boolean>(true);
+  const [coefficient, setCoefficient] = useState<number>(1);
+
   const [loading, setLoading] = useState<boolean>(false);
   const [loadingGrid, setLoadingGrid] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
   const [validating, setValidating] = useState<boolean>(false);
   const [unlocking, setUnlocking] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [coefficient, setCoefficient] = useState<number>(1);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-  const [isLocked, setIsLocked] = useState<boolean>(false);
-  const [, setDateVerrouillage] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
 
-  // Modal de déverrouillage Admin
-  const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
+  // Modal de déverrouillage Admin (une colonne à la fois)
+  const [unlockTarget, setUnlockTarget] = useState<Partie | null>(null);
   const [adminId, setAdminId] = useState<string>('');
-   const [adminPassword, setAdminPassword] = useState<string>('');
+  const [adminPassword, setAdminPassword] = useState<string>('');
+
+  const ccLocked = colonnes?.cc.est_verrouille ?? false;
+  const evaLocked = colonnes?.eva.est_verrouille ?? false;
+  const libelleCC = colonnes?.cc.libelle ?? 'CC';
+  const libelleEva = colonnes?.eva.libelle ?? 'Éva de niveau';
 
   // 0. Garantit que le token reçu en prop est celui utilisé par fetchApi
   useEffect(() => {
     if (token) setAuthToken(token);
   }, [token]);
-  
-  // 1. Charger les classes et séquences au démarrage
+
+  // 1. Charger les classes et trimestres au démarrage
   useEffect(() => {
     async function initMetadata() {
       if (!token) return;
@@ -125,14 +151,12 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
           setMatieres(matieresRes || []);
         }
         if (session?.id_matiere) setSelectedMatiere(session.id_matiere);
-        
-        if (session?.id_sequence) {
-          setSelectedSequence(session.id_sequence);
-        } else if (sequencesRes?.[0]?.sequences?.[0]?.id_sequence) {
-          setSelectedSequence(sequencesRes[0].sequences[0].id_sequence);
-        }
+
+        // Trimestre choisi à l'écran de connexion (retrouvé grâce à sa séquence), sinon le premier
+        const depuisSession = (sequencesRes || []).find(t => t.sequences.some(s => s.id_sequence === session?.id_sequence));
+        setSelectedTrimestre(prev => prev || depuisSession?.id_trimestre || sequencesRes?.[0]?.id_trimestre || '');
       } catch (error: unknown) {
-        const errMessage = error instanceof Error ? error.message : "Erreur lors du chargement des données initiales.";
+        const errMessage = error instanceof Error ? error.message : 'Erreur lors du chargement des données initiales.';
         setNotification({ type: 'error', message: errMessage });
       } finally {
         setLoading(false);
@@ -141,7 +165,7 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
     initMetadata();
   }, [token, session?.id_classe, session?.id_matiere, session?.id_sequence]);
 
-  // 2. Charger les matières lorsque la classe change (sans setState synchrone direct dans le corps de l'effet)
+  // 2. Charger les matières lorsque la classe change
   useEffect(() => {
     async function loadMatieres() {
       if (!selectedClasse) {
@@ -152,71 +176,61 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
         const data = await fetchApi(`/classes/${selectedClasse}/matieres`) as Matiere[];
         setMatieres(data || []);
       } catch {
-        setNotification({ type: 'error', message: "Erreur lors du chargement des matières." });
+        setNotification({ type: 'error', message: 'Erreur lors du chargement des matières.' });
       }
     }
     loadMatieres();
   }, [selectedClasse, token]);
 
-  // 3. Charger la grille dès que Classe, Matière et Séquence sont sélectionnés
+  // 3. Charger la grille du trimestre (CC + Éva) dès que Classe, Matière et Trimestre sont choisis
   useEffect(() => {
     async function loadGrille() {
-      if (!selectedClasse || !selectedMatiere || !selectedSequence) return;
+      if (!selectedClasse || !selectedMatiere || !selectedTrimestre) return;
       try {
         setLoadingGrid(true);
-        setNotification(null);
-        
         const data = await fetchApi(
-          `/notes/grille?id_classe=${selectedClasse}&id_matiere=${selectedMatiere}&id_sequence=${selectedSequence}`
-        ) as GridResponse;
-        
+          `/notes/grille-trimestre?id_classe=${selectedClasse}&id_matiere=${selectedMatiere}&id_trimestre=${selectedTrimestre}`
+        ) as GrilleTrimestreResponse;
+
         setStudents(data.grille ?? []);
+        setColonnes(data.colonnes);
+        setIdAffectationCours(data.id_affectation_cours);
         setCoefficient(data.coefficient ?? 1);
+        setCoefficientModifiable(data.coefficient_modifiable);
         setHasUnsavedChanges(false);
-        setIsLocked(data.est_verrouille ?? false);
-        setDateVerrouillage(data.date_verrouillage || null);
       } catch (error: unknown) {
         setStudents([]);
-        const errMessage = error instanceof Error ? error.message : "Erreur lors du chargement de la grille des notes.";
+        setColonnes(null);
+        const errMessage = error instanceof Error ? error.message : 'Erreur lors du chargement de la grille des notes.';
         setNotification({ type: 'error', message: errMessage });
       } finally {
         setLoadingGrid(false);
       }
     }
     loadGrille();
-  }, [selectedClasse, selectedMatiere, selectedSequence, token]);
+  }, [selectedClasse, selectedMatiere, selectedTrimestre, refreshKey, token]);
 
-  // Modifier le coefficient et recalculer les notes pondérées affichées.
   const handleCoefficientChange = (value: number) => {
-    if (isLocked) return;
+    if (!coefficientModifiable) return;
     setCoefficient(value);
     setHasUnsavedChanges(true);
-    setStudents(prev => prev.map(student => ({
-      ...student,
-      note_x_coefficient: student.valeur_note !== null && Number.isFinite(value)
-        ? Number((student.valeur_note * value).toFixed(2))
-        : null
-    })));
   };
 
-  const handleGradeChange = (id_eleve: string, value: string) => {
-    if (isLocked) return;
+  const handleGradeChange = (id_eleve: string, champ: Champ, value: string) => {
+    if ((champ === 'note_cc' && ccLocked) || (champ === 'note_eva' && evaLocked)) return;
     setHasUnsavedChanges(true);
     setStudents(prev =>
       prev.map(student => {
-        if (student.id_eleve === id_eleve) {
-          const val = value === '' ? null : parseFloat(value);
-          const nxc = val !== null && !isNaN(val) ? Number((val * coefficient).toFixed(2)) : null;
-          return { ...student, valeur_note: val, note_x_coefficient: nxc };
-        }
-        return student;
+        if (student.id_eleve !== id_eleve) return student;
+        const val = value === '' ? null : parseFloat(value);
+        return { ...student, [champ]: val !== null && Number.isNaN(val) ? null : val };
       })
     );
   };
 
-  // Enregistrer en mode brouillon
+  // Enregistrer en brouillon : n'envoie que les colonnes non verrouillées, et jamais de note vide
   const handleSaveDraft = async () => {
-    if (!selectedClasse || !selectedMatiere || !selectedSequence || isLocked) return;
+    if (!selectedClasse || !selectedMatiere || !selectedTrimestre || (ccLocked && evaLocked)) return;
     setSaving(true);
     setNotification(null);
 
@@ -225,113 +239,112 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
         setNotification({ type: 'error', message: 'Le coefficient doit être compris entre 0,01 et 99,99 (deux décimales maximum).' });
         return;
       }
+
       const notesPayload = students
-        .filter(s => s.valeur_note !== null && !isNaN(s.valeur_note))
         .map(s => ({
           id_eleve: s.id_eleve,
-          valeur_note: Number(s.valeur_note)
-        }));
-        if (notesPayload.length === 0) {
-  setNotification({ type: 'error', message: 'Saisissez au moins une note avant d’enregistrer.' });
-  setSaving(false);
-  return;
-}
-if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
-  setNotification({ type: 'error', message: 'Toutes les notes doivent être comprises entre 0 et 20.' });
-  setSaving(false);
-  return;
-}
+          ...(!ccLocked && estNote(s.note_cc) ? { note_cc: s.note_cc } : {}),
+          ...(!evaLocked && estNote(s.note_eva) ? { note_eva: s.note_eva } : {})
+        }))
+        .filter(n => 'note_cc' in n || 'note_eva' in n);
 
-      await fetchApi('/notes/sauvegarder', {
+      if (notesPayload.length === 0) {
+        setNotification({ type: 'error', message: 'Saisissez au moins une note avant d’enregistrer.' });
+        return;
+      }
+      const horsLimites = notesPayload.some(n =>
+        ('note_cc' in n && (n.note_cc < 0 || n.note_cc > 20)) || ('note_eva' in n && (n.note_eva < 0 || n.note_eva > 20))
+      );
+      if (horsLimites) {
+        setNotification({ type: 'error', message: 'Toutes les notes doivent être comprises entre 0 et 20.' });
+        return;
+      }
+
+      await fetchApi('/notes/sauvegarder-trimestre', {
         method: 'POST',
         body: JSON.stringify({
           id_classe: selectedClasse,
           id_matiere: selectedMatiere,
-          id_sequence: selectedSequence,
+          id_trimestre: selectedTrimestre,
           coefficient,
           notes: notesPayload
         })
       });
 
-      setHasUnsavedChanges(false);
-      setNotification({ type: 'success', message: 'Brouillon et coefficient enregistrés avec succès !' });
+      setNotification({ type: 'success', message: 'Brouillon enregistré avec succès !' });
+      setRefreshKey(k => k + 1);
     } catch (error: unknown) {
-      const errMessage = error instanceof Error ? error.message : "Erreur lors de la sauvegarde.";
+      const errMessage = error instanceof Error ? error.message : 'Erreur lors de la sauvegarde.';
       setNotification({ type: 'error', message: errMessage });
     } finally {
       setSaving(false);
     }
   };
 
-  // Valider et verrouiller définitivement la séquence
-  const handleValidateSequence = async () => {
-    if (!selectedClasse || !selectedMatiere || !selectedSequence) return;
+  const ccComplet = students.length > 0 && students.every(s => estNote(s.note_cc));
+  const evaComplet = students.length > 0 && students.every(s => estNote(s.note_eva));
+
+  // Verrouiller CC seul, Éva seule, ou tout ce qui ne l'est pas encore
+  const handleValidate = async (parties: Partie | 'tout') => {
+    if (!selectedClasse || !selectedMatiere || !selectedTrimestre) return;
     if (hasUnsavedChanges) {
-      setNotification({ type: 'error', message: 'Enregistrez le brouillon et le coefficient avant de valider.' });
+      setNotification({ type: 'error', message: 'Enregistrez le brouillon avant de verrouiller.' });
       return;
     }
-    if (!window.confirm("Attention : La validation définitive verrouillera la saisie pour tous les élèves. Êtes-vous sûr ?")) return;
+    const quoi = parties === 'cc' ? libelleCC : parties === 'eva' ? libelleEva : 'tout ce qui n’est pas encore verrouillé';
+    if (!window.confirm(`Attention : le verrouillage de « ${quoi} » bloque la saisie pour tous les élèves. Êtes-vous sûr ?`)) return;
 
     setValidating(true);
     setNotification(null);
-
     try {
-      const res = await fetchApi('/notes/valider', {
+      const res = await fetchApi('/notes/valider-trimestre', {
         method: 'POST',
         body: JSON.stringify({
           id_classe: selectedClasse,
           id_matiere: selectedMatiere,
-          id_sequence: selectedSequence
+          id_trimestre: selectedTrimestre,
+          parties
         })
       }) as AuthResponse;
-
-      setIsLocked(res.est_verrouille ?? true);
-      setNotification({ type: 'success', message: res.message || 'Notes validées et verrouillées avec succès !' });
+      setNotification({ type: 'success', message: res.message || 'Notes verrouillées avec succès !' });
+      setRefreshKey(k => k + 1);
     } catch (error: unknown) {
-      const errMessage = error instanceof Error ? error.message : "Erreur lors de la validation.";
+      const errMessage = error instanceof Error ? error.message : 'Erreur lors de la validation.';
       setNotification({ type: 'error', message: errMessage });
     } finally {
       setValidating(false);
     }
   };
 
-  // Déverrouillage par l'administrateur
+  // Déverrouillage par l'administrateur (une colonne à la fois)
   const handleAdminUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
-    const currentMatiereObj = matieres.find(m => m.id_matiere === selectedMatiere);
-    if (!currentMatiereObj?.id_affectation_cours) {
-      setNotification({ type: 'error', message: "Affectation du cours introuvable." });
+    const colonne = unlockTarget && colonnes ? colonnes[unlockTarget] : null;
+    if (!colonne || !idAffectationCours) {
+      setNotification({ type: 'error', message: 'Affectation du cours introuvable.' });
       return;
     }
 
     setUnlocking(true);
     setNotification(null);
-
     try {
       const loginRes = await fetchApi('/admin/auth/login', {
         method: 'POST',
         body: JSON.stringify({ id_admin: adminId, mot_de_passe: adminPassword })
       }) as AuthResponse;
 
-      const adminToken = loginRes.token;
-
-      const unlockRes = await fetchApi('/notes/admin/deverrouiller', {
+      await fetchApi('/notes/admin/deverrouiller', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${adminToken}`
-        },
-        body: JSON.stringify({
-          id_affectation_cours: currentMatiereObj.id_affectation_cours,
-          id_sequence: selectedSequence
-        })
-      }) as AuthResponse;
+        headers: { 'Authorization': `Bearer ${loginRes.token}` },
+        body: JSON.stringify({ id_affectation_cours: idAffectationCours, id_sequence: colonne.id_sequence })
+      });
 
-      setIsLocked(unlockRes.est_verrouille ?? false);
-      setShowAdminModal(false);
+      setUnlockTarget(null);
       setAdminPassword('');
-      setNotification({ type: 'success', message: 'Saisie rouverte par l\'administration avec succès !' });
+      setNotification({ type: 'success', message: `Saisie de « ${colonne.libelle} » rouverte par l'administration.` });
+      setRefreshKey(k => k + 1);
     } catch (error: unknown) {
-      const errMessage = error instanceof Error ? error.message : "Échec du déverrouillage administrateur.";
+      const errMessage = error instanceof Error ? error.message : 'Échec du déverrouillage administrateur.';
       setNotification({ type: 'error', message: errMessage });
     } finally {
       setUnlocking(false);
@@ -342,7 +355,18 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
     s.nom_complet.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const notesSaisiesCount = students.filter(s => s.valeur_note !== null && !isNaN(s.valeur_note)).length;
+  const ccSaisies = students.filter(s => estNote(s.note_cc)).length;
+  const evaSaisies = students.filter(s => estNote(s.note_eva)).length;
+
+  const toutVerrouillable =
+    (!ccLocked || !evaLocked) && (ccLocked || ccComplet) && (evaLocked || evaComplet);
+
+  const badge = (verrouille: boolean, libelle: string) => (
+    <span className={`text-xs px-3 py-1 rounded-full font-semibold border flex items-center gap-1.5 ${verrouille ? 'bg-rose-500/20 text-rose-200 border-rose-400/40' : 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'}`}>
+      {verrouille ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+      {libelle} : {verrouille ? 'verrouillé' : 'saisie ouverte'}
+    </span>
+  );
 
   if (loading) {
     return (
@@ -353,10 +377,13 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
     );
   }
 
+  const inputClass = (verrouille: boolean) =>
+    `w-28 text-center font-bold rounded-xl py-2 shadow-sm text-sm transition ${verrouille ? 'bg-slate-100 text-slate-500 border border-slate-300 cursor-not-allowed' : 'bg-white text-slate-900 border border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500'}`;
+
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 p-4 sm:p-8 font-sans">
       <div className="max-w-7xl mx-auto bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
-        
+
         {/* EN-TÊTE ET SÉLECTEURS DE FILTRES */}
         <div className="bg-linear-to-r from-blue-900 via-indigo-900 to-blue-950 p-6 text-white border-b-4 border-amber-500 space-y-4">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -368,10 +395,12 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
                 Carnet de Notes · {sessionData?.subjectName || 'Matière'} ({sessionData?.className || 'Classe'})
               </h1>
             </div>
-            <span className={`text-xs px-3 py-1 rounded-full font-semibold border flex items-center gap-1.5 ${isLocked ? 'bg-rose-500/20 text-rose-200 border-rose-400/40' : 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'}`}>
-              {isLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
-              {isLocked ? 'Séquence Verrouillée' : 'Saisie Ouverte'}
-            </span>
+            {colonnes && (
+              <div className="flex flex-wrap gap-2">
+                {badge(ccLocked, libelleCC)}
+                {badge(evaLocked, libelleEva)}
+              </div>
+            )}
           </div>
 
           {/* Sélecteurs dynamiques */}
@@ -383,6 +412,7 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
                 onChange={(e) => {
                   setSelectedClasse(e.target.value);
                   setSelectedMatiere('');
+                  setNotification(null);
                 }}
                 className="w-full bg-white text-slate-900 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400"
               >
@@ -397,7 +427,7 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
               <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Matière</label>
               <select
                 value={selectedMatiere}
-                onChange={(e) => setSelectedMatiere(e.target.value)}
+                onChange={(e) => { setSelectedMatiere(e.target.value); setNotification(null); }}
                 disabled={!selectedClasse}
                 className="w-full bg-white text-slate-900 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-50"
               >
@@ -411,28 +441,24 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
             </div>
 
             <div>
-              <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Séquence</label>
+              <label className="block text-[10px] font-bold text-amber-300 uppercase mb-1">Trimestre</label>
               <select
-                value={selectedSequence}
-                onChange={(e) => setSelectedSequence(e.target.value)}
+                value={selectedTrimestre}
+                onChange={(e) => { setSelectedTrimestre(e.target.value); setNotification(null); }}
                 className="w-full bg-white text-slate-900 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400"
               >
-                <option value="">-- Choisir une séquence --</option>
+                <option value="">-- Choisir un trimestre --</option>
                 {trimestres.map(t => (
-                  <optgroup key={t.id_trimestre} label={t.libelle_trimestre}>
-                    {t.sequences.map((s: SequenceItem) => (
-                      <option key={s.id_sequence} value={s.id_sequence}>{s.libelle_sequence}</option>
-                    ))}
-                  </optgroup>
+                  <option key={t.id_trimestre} value={t.id_trimestre}>{t.libelle_trimestre}</option>
                 ))}
               </select>
             </div>
           </div>
 
           {/* Barre de recherche et actions */}
-          {selectedClasse && selectedMatiere && selectedSequence && (
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-2">
-              <div className="relative w-full sm:w-72">
+          {selectedClasse && selectedMatiere && selectedTrimestre && colonnes && (
+            <div className="flex flex-col lg:flex-row justify-between items-center gap-3 pt-2">
+              <div className="relative w-full lg:w-72">
                 <Search className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
                 <input
                   type="text"
@@ -443,34 +469,69 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
                 />
               </div>
 
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                {!isLocked ? (
-                  <>
-                    <button 
-                      onClick={handleSaveDraft}
-                      disabled={saving || students.length === 0}
-                      className="flex-1 sm:flex-none flex items-center justify-center space-x-1.5 bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer disabled:opacity-50"
-                    >
-                      {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                      <span>Enregistrer Brouillon</span>
-                    </button>
+              <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                {!(ccLocked && evaLocked) && (
+                  <button
+                    onClick={handleSaveDraft}
+                    disabled={saving || validating || students.length === 0}
+                    className="flex-1 lg:flex-none flex items-center justify-center space-x-1.5 bg-slate-700 hover:bg-slate-800 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer disabled:opacity-50"
+                  >
+                    {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                    <span>Enregistrer Brouillon</span>
+                  </button>
+                )}
 
-                    <button 
-                      onClick={handleValidateSequence}
-                      disabled={validating || saving || hasUnsavedChanges || students.length === 0}
-                      className="flex-1 sm:flex-none flex items-center justify-center space-x-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer disabled:opacity-50"
-                    >
-                      {validating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-                      <span>Valider & Verrouiller</span>
-                    </button>
-                  </>
-                ) : (
-                  <button 
-                    onClick={() => setShowAdminModal(true)}
-                    className="w-full sm:w-auto flex items-center justify-center space-x-2 bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer"
+                {!ccLocked && (
+                  <button
+                    onClick={() => handleValidate('cc')}
+                    disabled={validating || saving || hasUnsavedChanges || !ccComplet}
+                    title={!ccComplet ? `Toutes les notes de ${libelleCC} doivent être saisies` : undefined}
+                    className="flex-1 lg:flex-none flex items-center justify-center space-x-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer disabled:opacity-50"
+                  >
+                    {validating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                    <span>Verrouiller {libelleCC}</span>
+                  </button>
+                )}
+
+                {!evaLocked && (
+                  <button
+                    onClick={() => handleValidate('eva')}
+                    disabled={validating || saving || hasUnsavedChanges || !evaComplet}
+                    title={!evaComplet ? `Toutes les notes de ${libelleEva} doivent être saisies` : undefined}
+                    className="flex-1 lg:flex-none flex items-center justify-center space-x-1.5 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer disabled:opacity-50"
+                  >
+                    {validating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                    <span>Verrouiller {libelleEva}</span>
+                  </button>
+                )}
+
+                {!ccLocked && !evaLocked && (
+                  <button
+                    onClick={() => handleValidate('tout')}
+                    disabled={validating || saving || hasUnsavedChanges || !toutVerrouillable}
+                    className="flex-1 lg:flex-none flex items-center justify-center space-x-1.5 bg-blue-700 hover:bg-blue-800 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer disabled:opacity-50"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Tout verrouiller</span>
+                  </button>
+                )}
+
+               {/* ccLocked && (
+                  <button
+                    onClick={() => setUnlockTarget('cc')}
+                    className="flex-1 lg:flex-none flex items-center justify-center space-x-2 bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer"
                   >
                     <KeyRound className="w-4 h-4 text-amber-200" />
-                    <span>Déverrouiller (Admin)</span>
+                    <span>Déverrouiller {libelleCC} (Admin)</span>
+                  </button>
+                )*/}
+                {evaLocked && (
+                  <button
+                    onClick={() => setUnlockTarget('eva')}
+                    className="flex-1 lg:flex-none flex items-center justify-center space-x-2 bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow cursor-pointer"
+                  >
+                    <KeyRound className="w-4 h-4 text-amber-200" />
+                    <span>Déverrouiller {libelleEva} (Admin)</span>
                   </button>
                 )}
               </div>
@@ -488,14 +549,18 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
 
         {/* Barre de stats */}
         <div className="bg-slate-50 px-6 py-3 border-b border-slate-200 flex flex-wrap justify-between items-center text-xs gap-4">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <span className="flex items-center gap-1.5 font-semibold text-slate-700 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
               <Users className="w-3.5 h-3.5 text-blue-900" />
-              <span>Effectif : <strong className="text-blue-900">{filteredStudents.length} élèves</strong></span>
+              <span>Effectif : <strong className="text-blue-900">{students.length} élèves</strong></span>
             </span>
             <span className="flex items-center gap-1.5 font-semibold text-slate-700 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Notes saisies : <strong className="text-emerald-700">{notesSaisiesCount} / {students.length}</strong></span>
+              <span>{libelleCC} : <strong className="text-emerald-700">{ccSaisies} / {students.length}</strong></span>
+            </span>
+            <span className="flex items-center gap-1.5 font-semibold text-slate-700 bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>{libelleEva} : <strong className="text-emerald-700">{evaSaisies} / {students.length}</strong></span>
             </span>
           </div>
           <div className="flex items-center gap-3 text-slate-500 font-medium">
@@ -507,20 +572,21 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
               max="99.99"
               step="0.01"
               value={Number.isFinite(coefficient) ? coefficient : ''}
-              disabled={isLocked || loadingGrid || saving || validating}
+              disabled={!coefficientModifiable || loadingGrid || saving || validating}
               onChange={(e) => handleCoefficientChange(e.target.valueAsNumber)}
               className="w-24 rounded-lg border border-amber-400 px-3 py-2 text-center font-bold text-blue-900 disabled:bg-slate-100"
             />
+            {!coefficientModifiable && <span className="text-slate-500">Figé (séquence verrouillée)</span>}
             {hasUnsavedChanges && <span className="text-amber-700">Non enregistré</span>}
           </div>
         </div>
 
         {/* Tableau des notes et élèves */}
         <div className="overflow-x-auto max-h-125 border-b border-slate-200">
-          {!selectedClasse || !selectedMatiere || !selectedSequence ? (
+          {!selectedClasse || !selectedMatiere || !selectedTrimestre ? (
             <div className="py-16 text-center text-slate-400 space-y-2">
               <Filter className="w-10 h-10 mx-auto opacity-40 text-blue-900" />
-              <p className="text-xs font-semibold">Veuillez sélectionner une Classe, une Matière et une Séquence pour afficher la grille.</p>
+              <p className="text-xs font-semibold">Veuillez sélectionner une Classe, une Matière et un Trimestre pour afficher la grille.</p>
             </div>
           ) : loadingGrid ? (
             <div className="py-16 text-center text-slate-500 space-y-2 flex flex-col items-center justify-center">
@@ -538,22 +604,36 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
                 <tr>
                   <th className="p-3.5 border-b border-slate-300 w-16 text-center font-bold tracking-wider">N°</th>
                   <th className="p-3.5 border-b border-slate-300 font-bold tracking-wider">Nom et Prénom (s) de l'élève</th>
-                  <th className="p-3.5 border-b border-slate-300 w-44 text-center bg-blue-900 font-bold text-amber-300 tracking-wider">Note / 20</th>
-                  <th className="p-3.5 border-b border-slate-300 w-44 text-center bg-indigo-950 font-bold text-emerald-300 tracking-wider">NxC (Note × Coef)</th>
+                  <th className="p-3.5 border-b border-slate-300 w-40 text-center bg-blue-900 font-bold text-amber-300 tracking-wider">
+                    {libelleCC} / 20 <span className="block text-[10px] font-semibold text-amber-200/80">30 % du trimestre</span>
+                  </th>
+                  <th className="p-3.5 border-b border-slate-300 w-40 text-center bg-blue-900 font-bold text-amber-300 tracking-wider">
+                    {libelleEva} / 20 <span className="block text-[10px] font-semibold text-amber-200/80">70 % du trimestre</span>
+                  </th>
+                  <th className="p-3.5 border-b border-slate-300 w-36 text-center bg-indigo-950 font-bold text-sky-300 tracking-wider">Moyenne trimestre</th>
+                  <th className="p-3.5 border-b border-slate-300 w-40 text-center bg-indigo-950 font-bold text-emerald-300 tracking-wider">NxC (Moy. × Coef)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
                 {filteredStudents.map((student, index) => {
-                  const noteValide = student.valeur_note !== null && !isNaN(student.valeur_note);
-                  const nxcCalculé = noteValide && student.note_x_coefficient !== null ? Number(student.note_x_coefficient).toFixed(2) : '—';
-
+                  const r = calculer(student, coefficient);
                   return (
                     <tr key={student.id_eleve} className={`${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'} hover:bg-amber-50/40 transition-colors`}>
-                      <td className="p-3.5 text-center text-slate-500 font-mono font-bold">
-                        {index + 1}
-                      </td>
-                      <td className="p-3.5 font-bold text-slate-800 uppercase tracking-wide">
-                        {student.nom_complet}
+                      <td className="p-3.5 text-center text-slate-500 font-mono font-bold">{index + 1}</td>
+                      <td className="p-3.5 font-bold text-slate-800 uppercase tracking-wide">{student.nom_complet}</td>
+                      <td className="p-2 text-center bg-amber-50/20">
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max="20"
+                          disabled={ccLocked}
+                          value={student.note_cc ?? ''}
+                          onChange={(e) => handleGradeChange(student.id_eleve, 'note_cc', e.target.value)}
+                          className={inputClass(ccLocked)}
+                          placeholder="—"
+                          aria-label={`${libelleCC} de ${student.nom_complet}`}
+                        />
                       </td>
                       <td className="p-2 text-center bg-amber-50/20">
                         <input
@@ -561,15 +641,19 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
                           step="0.01"
                           min="0"
                           max="20"
-                          disabled={isLocked}
-                          value={student.valeur_note ?? ''}
-                          onChange={(e) => handleGradeChange(student.id_eleve, e.target.value)}
-                          className={`w-32 text-center font-bold rounded-xl py-2 shadow-sm text-sm transition ${isLocked ? 'bg-slate-100 text-slate-500 border border-slate-300 cursor-not-allowed' : 'bg-white text-slate-900 border border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-500'}`}
+                          disabled={evaLocked}
+                          value={student.note_eva ?? ''}
+                          onChange={(e) => handleGradeChange(student.id_eleve, 'note_eva', e.target.value)}
+                          className={inputClass(evaLocked)}
                           placeholder="—"
+                          aria-label={`${libelleEva} de ${student.nom_complet}`}
                         />
                       </td>
+                      <td className="p-3.5 text-center font-mono font-bold text-sky-800 bg-sky-50/30 text-sm">
+                        {r ? r.moyenne.toFixed(2) : '—'}
+                      </td>
                       <td className="p-3.5 text-center font-mono font-bold text-emerald-700 bg-emerald-50/20 text-sm">
-                        {nxcCalculé}
+                        {r ? r.nxc.toFixed(2) : '—'}
                       </td>
                     </tr>
                   );
@@ -585,7 +669,7 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
             <span>Connecté en tant que : <strong className="text-blue-900">{userRole} ({sessionData?.teacherName})</strong></span>
           </div>
-          <button 
+          <button
             onClick={onLogout}
             className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl transition flex items-center space-x-2 font-semibold shadow-md cursor-pointer"
           >
@@ -593,11 +677,10 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
             <span>Fermer / Déconnexion</span>
           </button>
         </div>
-
       </div>
 
       {/* Modal de Déverrouillage Administrateur */}
-      {showAdminModal && (
+      {unlockTarget && colonnes && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
@@ -605,25 +688,26 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
                 <KeyRound className="w-4 h-4 text-amber-500" />
                 Accès Administrateur requis
               </h3>
-              <button 
-                onClick={() => setShowAdminModal(false)}
+              <button
+                onClick={() => setUnlockTarget(null)}
                 className="text-slate-400 hover:text-slate-600 text-sm font-bold cursor-pointer"
+                aria-label="Fermer"
               >
                 ✕
               </button>
             </div>
-            
+
             <p className="text-xs text-slate-600">
-              Veuillez saisir l'identifiant (UUID) et le mot de passe administrateur pour déverrouiller cette séquence.
+              Saisissez l'identifiant (UUID) et le mot de passe administrateur pour déverrouiller « {colonnes[unlockTarget].libelle} ». Les notes déjà saisies sont conservées.
             </p>
 
             <form onSubmit={handleAdminUnlock} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Identifiant Admin (UUID)</label>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   required
-                  placeholder="ID administrateur" 
+                  placeholder="ID administrateur"
                   value={adminId}
                   onChange={(e) => setAdminId(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono text-xs"
@@ -632,10 +716,10 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Mot de passe Administrateur</label>
-                <input 
-                  type="password" 
+                <input
+                  type="password"
                   required
-                  placeholder="••••••••••••" 
+                  placeholder="••••••••••••"
                   value={adminPassword}
                   onChange={(e) => setAdminPassword(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
@@ -645,7 +729,7 @@ if (notesPayload.some(n => n.valeur_note < 0 || n.valeur_note > 20)) {
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowAdminModal(false)}
+                  onClick={() => setUnlockTarget(null)}
                   className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold py-2.5 rounded-xl transition cursor-pointer"
                 >
                   Annuler
