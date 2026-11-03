@@ -253,7 +253,10 @@ export const GradeEntrySheet: React.FC<GradeEntrySheetProps> = ({ sessionData, t
         return;
       }
       const horsLimites = notesPayload.some(n =>
-        ('note_cc' in n && (n.note_cc < 0 || n.note_cc > 20)) || ('note_eva' in n && (n.note_eva < 0 || n.note_eva > 20))
+(typeof n.note_cc === 'number' &&
+  (n.note_cc < 0 || n.note_cc > 20)) ||
+(typeof n.note_eva === 'number' &&
+  (n.note_eva < 0 || n.note_eva > 20))
       );
       if (horsLimites) {
         setNotification({ type: 'error', message: 'Toutes les notes doivent être comprises entre 0 et 20.' });
