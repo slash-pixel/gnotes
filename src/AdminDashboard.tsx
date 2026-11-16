@@ -62,15 +62,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onLogout }) => {
         if (cancelled) return;
         setData(res);
         setError(null);
-      } catch (err: unknown) {
-        if (cancelled) return;
-        const message = err instanceof Error ? err.message : 'Erreur lors du chargement du tableau de bord.';
-        if (/session|token/i.test(message)) {
-          onLogout();
-          return;
-        }
-        setError(message);
-      } finally {
+} catch (err: unknown) {
+  if (cancelled) return;
+
+  const message = err instanceof Error
+    ? err.message
+    : 'Erreur lors du chargement du tableau de bord.';
+
+  // Afficher l'erreur sans déconnecter automatiquement l'administrateur.
+  setError(message);
+} finally {
         if (!cancelled) setLoading(false);
       }
     }
